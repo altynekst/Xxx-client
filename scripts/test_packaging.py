@@ -1,0 +1,179 @@
+from contextlib import redirect_stderr, redirect_stdout
+import io
+import json
+import os
+from pathlib import Path
+import shutil
+import subprocess
+import sys
+import tempfile
+import unittest
+from unittest.mock import patch
+
+from check_public_tree import main as check_public_tree
+from fetch_macos_dependencies import download
+from package_client import copy_runtime_data, macos_dependency_exists, prepare_macos_binaries
+from release_notes import notes_for_version
+
+
+class RuntimeManifestTests(unittest.TestCase):
+    def setUp(self):
+        self.temporary = tempfile.TemporaryDirectory()
+        self.addCleanup(self.temporary.cleanup)
+        self.root = Path(self.temporary.name)
+        self.build = self.root / "build"
+        self.destination = self.root / "package"
+        (self.build / "data/fonts").mkdir(parents=True)
+        (self.build / "data/fonts/index.json").write_text(json.dumps({"optional font files": [{"file": "optional.ttf"}]}))
+        (self.build / "runtime-data.txt").write_text("data/fonts/index.json\n")
+
+    def test_stale_files_are_not_packaged(self):
+        (self.build / "data/fonts/optional.ttf").write_bytes(b"cached font")
+        (self.build / "data/spoofclients").mkdir()
+        (self.build / "data/spoofclients/private.json").write_text("{}")
+        copy_runtime_data(self.build, self.destination)
+        self.assertEqual([path.relative_to(self.destination).as_posix() for path in self.destination.rglob("*") if path.is_file()], ["data/fonts/index.json"])
+
+    def test_rejects_private_fonts_shaders_and_path_traversal(self):
+        for entry in ("data/fonts/optional.ttf", "data/spoofclients/private.json", "data/shader/code.frag", "../secret", "/data/secret"):
+            with self.subTest(entry=entry):
+                (self.build / "runtime-data.txt").write_text(entry + "\n")
+                with self.assertRaises(SystemExit):
+                    copy_runtime_data(self.build, self.destination)
+
+    def test_missing_resource_fails_packaging(self):
+        (self.build / "runtime-data.txt").write_text("data/missing.png\n")
+        with self.assertRaises(FileNotFoundError):
+            copy_runtime_data(self.build, self.destination)
+
+    def test_missing_manifest_requires_reconfiguration(self):
+        (self.build / "runtime-data.txt").unlink()
+        with self.assertRaises(SystemExit):
+            copy_runtime_data(self.build, self.destination)
+
+
+class PackageContentsTests(unittest.TestCase):
+    def setUp(self):
+        self.temporary = tempfile.TemporaryDirectory()
+        self.addCleanup(self.temporary.cleanup)
+        self.package = Path(self.temporary.name)
+        (self.package / "data/fonts").mkdir(parents=True)
+        (self.package / "data/fonts/index.json").write_text(json.dumps({"optional font files": [{"file": "optional.ttf"}]}))
+        (self.package / "data/xxx").mkdir()
+        (self.package / "data/xxx/menu_world.png").write_bytes(b"background fixture")
+
+    def check_package(self):
+        with patch("sys.argv", ["check_public_tree.py", "--package-dir", str(self.package)]), redirect_stdout(io.StringIO()), redirect_stderr(io.StringIO()):
+            return check_public_tree()
+
+    def test_original_background_is_allowed(self):
+        self.assertEqual(self.check_package(), 0)
+
+    def test_optional_fonts_remain_excluded(self):
+        (self.package / "data/fonts/optional.ttf").write_bytes(b"optional font fixture")
+        self.assertEqual(self.check_package(), 1)
+
+
+class ReleaseNotesTests(unittest.TestCase):
+    def test_only_requested_version_is_published(self):
+        changelog = "# Changelog\n\n## 0.2.0\n\n- Smaller packages.\n\n## 0.1.0\n\n- Initial release.\n"
+        self.assertEqual(notes_for_version(changelog, "0.2.0"), "- Smaller packages.")
+        self.assertEqual(notes_for_version(changelog, "0.1.0"), "- Initial release.")
+
+    def test_missing_and_empty_entries_fail(self):
+        for changelog in ("## 0.1.0\n- Initial release.\n", "## 0.2.0\n\n## 0.1.0\n- Initial release.\n"):
+            with self.assertRaises(ValueError):
+                notes_for_version(changelog, "0.2.0")
+
+
+class MacosDownloadTests(unittest.TestCase):
+    def test_token_is_only_sent_to_the_github_api(self):
+        for url in ("https://api.github.com/repos/ddnet/ddnet-libs/git/trees/pinned", "https://raw.githubusercontent.com/ddnet/ddnet-libs/pinned/file", "https://github.com/KhronosGroup/MoltenVK/releases/download/pinned/runtime.tar", "https://api.github.com.example.invalid/file", "http://api.github.com/repos/ddnet/ddnet-libs/git/trees/pinned"):
+            with self.subTest(url=url), patch.dict(os.environ, {"GITHUB_TOKEN": "test-only-token"}), patch("fetch_macos_dependencies.urllib.request.urlopen") as open_url:
+                open_url.return_value.__enter__.return_value.read.return_value = b"payload"
+                self.assertEqual(download(url), b"payload")
+                request = open_url.call_args.args[0]
+                expected = "Bearer test-only-token" if url.startswith("https://api.github.com/") else None
+                self.assertEqual(request.get_header("Authorization"), expected)
+
+    def test_local_downloads_work_without_a_token(self):
+        with patch.dict(os.environ, {}, clear=True), patch("fetch_macos_dependencies.urllib.request.urlopen") as open_url:
+            open_url.return_value.__enter__.return_value.read.return_value = b"payload"
+            self.assertEqual(download("https://api.github.com/repos/ddnet/ddnet-libs/git/trees/pinned"), b"payload")
+            self.assertIsNone(open_url.call_args.args[0].get_header("Authorization"))
+
+
+class MacosCompatibilityTests(unittest.TestCase):
+    @unittest.skipUnless(sys.platform == "darwin" and shutil.which("cmake"), "Framework discovery requires macOS and CMake")
+    def test_headers_come_from_the_selected_framework(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            framework = root / "SDL2.framework"
+            headers = framework / "Headers"
+            headers.mkdir(parents=True)
+            (headers / "SDL_assert.h").write_text("")
+            module = Path(__file__).resolve().parents[1] / "cmake/FindSDL2.cmake"
+            script = root / "framework.cmake"
+            script.write_text(f'''
+set(APPLE TRUE)
+set(CMAKE_CROSSCOMPILING TRUE)
+set(CROSSCOMPILING_NO_CMAKE_SYSTEM_PATH NO_DEFAULT_PATH)
+set(TARGET_OS mac)
+set(SDL2_LIBRARY "{framework.as_posix()}")
+function(set_extra_dirs_lib)
+endfunction()
+function(set_extra_dirs_include)
+  set(HINTS_SDL2_INCLUDEDIR "{root.as_posix()}/missing-headers" PARENT_SCOPE)
+endfunction()
+function(is_bundled Result)
+  set(${{Result}} TRUE PARENT_SCOPE)
+endfunction()
+include("{module.as_posix()}")
+if(NOT SDL2_INCLUDEDIR STREQUAL "{headers.as_posix()}")
+  message(FATAL_ERROR "The selected framework headers were not found")
+endif()
+''')
+            result = subprocess.run(["cmake", "-P", str(script)], capture_output=True, text=True)
+            self.assertEqual(result.returncode, 0, result.stderr)
+
+    def test_missing_framework_cannot_pass_dependency_check(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            app = Path(temporary) / "xxx.app"
+            executable = app / "Contents/MacOS/xxx"
+            frameworks = app / "Contents/Frameworks"
+            dependency = "@rpath/SDL2.framework/Versions/A/SDL2"
+            self.assertFalse(macos_dependency_exists(dependency, executable, executable, [frameworks]))
+            sdl = frameworks / "SDL2.framework/Versions/A/SDL2"
+            sdl.parent.mkdir(parents=True)
+            sdl.write_bytes(b"framework fixture")
+            self.assertTrue(macos_dependency_exists(dependency, executable, executable, [frameworks]))
+
+    @unittest.skipIf(os.name == "nt", "macOS bundle symlinks are checked on macOS")
+    def test_external_runtime_symlink_is_rejected(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            executable = root / "xxx.app/Contents/MacOS/xxx"
+            frameworks = root / "xxx.app/Contents/Frameworks"
+            frameworks.mkdir(parents=True)
+            external = root / "external.dylib"
+            external.write_bytes(b"external fixture")
+            (frameworks / "external.dylib").symlink_to(external)
+            self.assertFalse(macos_dependency_exists("@rpath/external.dylib", executable, executable, [frameworks]))
+
+    def test_newer_runtime_is_rejected(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            app = Path(temporary)
+            (app / "runtime.dylib").write_bytes(b"\xcf\xfa\xed\xfe")
+
+            def command(args, **kwargs):
+                result = type("Result", (), {})()
+                result.stdout = "arm64\n" if args[0] == "lipo" else "cmd LC_BUILD_VERSION\nminos 26.0\n"
+                return result
+
+            with patch("package_client.platform.machine", return_value="arm64"), patch("package_client.subprocess.run", side_effect=command):
+                with self.assertRaisesRegex(SystemExit, "requires macOS 26.0"):
+                    prepare_macos_binaries(app, "12.0")
+
+
+if __name__ == "__main__":
+    unittest.main()
