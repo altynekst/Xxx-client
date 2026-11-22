@@ -77,6 +77,14 @@ download_component() {
                 "https://dl.google.com/android/repository/commandlinetools-${HOST_OS}-13114758_latest.zip" \
                 "commandlinetools-${HOST_OS}-13114758_latest.zip" \
                 "latest"
+        # The commandlinetools zip ships a top-level "cmdline-tools" directory, so the
+        # naive extract produces latest/cmdline-tools/bin/sdkmanager while the SDK
+        # layout requires latest/bin/sdkmanager. Hoist the contents one level up.
+        if [ ! -f latest/bin/sdkmanager ] && [ -f latest/cmdline-tools/bin/sdkmanager ]; then
+                log_info "Fixing nested cmdline-tools layout"
+                mv latest/cmdline-tools/* latest/
+                rmdir latest/cmdline-tools
+        fi
 )
 
 # Accept all SDK licenses and pre-install the platform the project builds against,

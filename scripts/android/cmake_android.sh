@@ -246,7 +246,10 @@ log_info "Copying libraries..."
 
 function copy_libs() {
         mkdir -p "lib/$2"
-        cp "$ANDROID_SUB_BUILD_DIR/$1/libDDNet.so" "lib/$2"
+        # The client shared library is named after CLIENT_EXECUTABLE (= game name,
+        # e.g. libXxx.so), while the server one keeps the fixed DDNet-Server name
+        # that ServerService.java loads via System.loadLibrary("DDNet-Server").
+        cp "$ANDROID_SUB_BUILD_DIR/$1/lib${GAME_NAME}.so" "lib/$2"
         cp "$ANDROID_SUB_BUILD_DIR/$1/libDDNet-Server.so" "lib/$2"
 }
 
