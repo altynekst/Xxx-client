@@ -89,11 +89,14 @@ download_component() {
 
 # Accept all SDK licenses and pre-install the platform the project builds against,
 # so Gradle/AGP never has to download anything mid-build.
-if [ -f "latest/bin/sdkmanager" ]; then
+# NOTE: the sdkmanager lives under cmdline-tools/latest/bin relative to SDK_DIR,
+# so use the full absolute path (cwd here is SDK_DIR, NOT cmdline-tools).
+CMDLINE_TOOLS_BIN="${SDK_DIR}/cmdline-tools/latest/bin"
+if [ -f "${CMDLINE_TOOLS_BIN}/sdkmanager" ]; then
         log_info "Accepting SDK licenses"
-        yes 2> /dev/null | latest/bin/sdkmanager --sdk_root="${SDK_DIR}" --licenses > /dev/null
+        yes 2> /dev/null | "${CMDLINE_TOOLS_BIN}/sdkmanager" --sdk_root="${SDK_DIR}" --licenses > /dev/null
         log_info "Installing platforms;android-36"
-        yes 2> /dev/null | latest/bin/sdkmanager --sdk_root="${SDK_DIR}" "platforms;android-36" > /dev/null
+        yes 2> /dev/null | "${CMDLINE_TOOLS_BIN}/sdkmanager" --sdk_root="${SDK_DIR}" "platforms;android-36" > /dev/null
 else
         log_error "ERROR: sdkmanager not found at ${SDK_DIR}/cmdline-tools/latest/bin/sdkmanager"
         exit 1

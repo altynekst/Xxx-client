@@ -68,6 +68,11 @@ fi
 
 sed -i "s/org.ddnet.client/${APK_PACKAGE_NAME}/g" src/main/java/"${APK_PACKAGE_FOLDER}"/ClientActivity.java
 sed -i "s/org.ddnet.client/${APK_PACKAGE_NAME}/g" src/main/java/"${APK_PACKAGE_FOLDER}"/ServerService.java
+# SDLActivity loads the client library via getLibraries(), which upstream hardcodes
+# to "DDNet". CMake outputs lib${GAME_NAME}.so (= lib${APK_BASENAME}.so), so the
+# quoted string must match it. Only ClientActivity is touched: ServerService keeps
+# loading "DDNet-Server" (quoted "DDNet" never matches "DDNet-Server").
+sed -i "s/\"DDNet\"/\"${APK_BASENAME}\"/g" src/main/java/"${APK_PACKAGE_FOLDER}"/ClientActivity.java
 sed -i "s/org.ddnet.client/${APK_PACKAGE_NAME}/g" proguard-rules.pro
 
 # Disable HID manager as we compile SDL without hidapi and libusb support
