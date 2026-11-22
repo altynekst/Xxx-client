@@ -671,6 +671,7 @@ private:
 
         void RunPage(const Xui::FPage &Page);
         void RenderConnection(class CMenus &Menus);
+        void RenderTouchControlsEditor(class CMenus &Menus);
         void RenderScoreHud(float Alpha);
         void HudPill(const char *pIcon, const char *pText, ColorRGBA IconColor, float Width = 0.0f);
         void RenderPlayerStateModule(bool Preview);
