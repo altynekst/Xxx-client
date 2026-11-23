@@ -339,11 +339,9 @@ void CXui::RenderIngame(CMenus &M)
                                         M.m_GamePage = CMenus::PAGE_PLAYERS;
                                 constexpr int PAGE_XX_ADMIN = 1000;
                                 const bool Admin = Client()->RconAuthed();
-                                if(!Admin && M.m_GamePage == PAGE_XX_ADMIN)
-                                        M.m_GamePage = CMenus::PAGE_PLAYERS;
                                 static const int s_aPages[] = {CMenus::PAGE_PLAYERS, CMenus::PAGE_CALLVOTE, CMenus::PAGE_SERVER_INFO, PAGE_XX_ADMIN};
                                 const char *apTabs[] = {Localize("Players"), Localize("Vote"), Localize("Server info"), Localize("Admin")};
-                                const int NumTabs = Admin ? 4 : 3;
+                                constexpr int NumTabs = 4;
                                 int Tab = 0;
                                 for(int i = 0; i < NumTabs; i++)
                                         if(M.m_GamePage == s_aPages[i])
@@ -447,6 +445,38 @@ void CXui::RenderIngame(CMenus &M)
                                         RenderVoteTab(M);
                                 else if(M.m_GamePage == PAGE_XX_ADMIN)
                                 {
+                                        if(!Admin)
+                                        {
+                                                SBox RconLogin;
+                                                RconLogin.m_W = Grow();
+                                                RconLogin.m_Gap = 12.0f;
+                                                RconLogin.m_Padding = SEdges(2.0f);
+                                                Column(RconLogin, [&]() {
+                                                        STextStyle Hint;
+                                                        Hint.m_Size = 13.0f;
+                                                        Hint.m_Color = XuiTheme::Color::TEXT2;
+                                                        Hint.m_Wrap = true;
+                                                        Text(Localize("Enter the rcon password to run admin commands on this server."), Hint);
+                                                        SBox PwRow;
+                                                        PwRow.m_W = Grow();
+                                                        PwRow.m_Gap = 8.0f;
+                                                        PwRow.m_Cross = EAlign::CENTER;
+                                                        Row(PwRow, [&]() {
+                                                                static char s_aRconPw[64] = "";
+                                                                const SResult F = Field("ig.rcon.pw", s_aRconPw, sizeof(s_aRconPw), {.m_pPlaceholder = Localize("Rcon password"), .m_pIcon = Ph::LOCK_KEY, .m_W = Grow()});
+                                                                if((Button(Localize("Login"), {.m_Variant = EVariant::ACCENT, .m_pIcon = Ph::SHIELD_STAR, .m_pKey = "ig.rcon.login"}).m_Clicked || F.m_Submitted) && s_aRconPw[0] != '\0')
+                                                                {
+                                                                        Client()->RconAuth("", s_aRconPw, g_Config.m_ClDummy);
+                                                                        ShowToast(Localize("Rcon password sent"), Ph::SHIELD_STAR);
+                                                                        s_aRconPw[0] = '\0';
+                                                                }
+                                                        });
+                                                        if(Button(Localize("Open rcon console"), {.m_Variant = EVariant::GHOST, .m_pIcon = Ph::TERMINAL_WINDOW, .m_W = Grow(), .m_pKey = "ig.rcon.open"}).m_Clicked)
+                                                                GameClient()->m_GameConsole.Toggle(CGameConsole::CONSOLETYPE_REMOTE);
+                                                });
+                                        }
+                                        else
+                                        {
                                         const SAction aAdmin[] = {
                                                 {Localize("Super"), Ph::LIGHTNING, false, true},
                                                 {Localize("Normal"), Ph::USER, false, true},
@@ -508,6 +538,7 @@ void CXui::RenderIngame(CMenus &M)
                                                         GroupRow([&]() { FieldRow("ig.adm.pw", s_aPassword, sizeof(s_aPassword), Localize("Password (empty = none)"), Ph::LOCK_SIMPLE, Localize("Set"), "password \"%s\""); }, false);
                                                 GroupRow([&]() { FieldRow("ig.adm.cmd", s_aCommand, sizeof(s_aCommand), Localize("Any rcon command"), Ph::TERMINAL, Localize("Run"), "%s"); }, false);
                                         });
+                                        }
                                 }
                                 else
                                 {
@@ -534,6 +565,15 @@ void CXui::RenderIngame(CMenus &M)
                                         });
                                 }
 
+                                SBox ConsoleRow;
+                                ConsoleRow.m_W = Grow();
+                                ConsoleRow.m_Gap = 10.0f;
+                                Row(ConsoleRow, [&]() {
+                                        if(Button(Localize("Console"), {.m_Variant = EVariant::GHOST, .m_pIcon = Ph::TERMINAL_WINDOW, .m_Height = 48.0f, .m_FontSize = 15.0f, .m_W = Grow(), .m_pKey = "ig.console"}).m_Clicked)
+                                                GameClient()->m_GameConsole.Toggle(CGameConsole::CONSOLETYPE_LOCAL);
+                                        if(Button(Localize("Rcon"), {.m_Variant = EVariant::GHOST, .m_pIcon = Ph::SHIELD_STAR, .m_Height = 48.0f, .m_FontSize = 15.0f, .m_W = Grow(), .m_pKey = "ig.rcon"}).m_Clicked)
+                                                GameClient()->m_GameConsole.Toggle(CGameConsole::CONSOLETYPE_REMOTE);
+                                });
                                 SBox Bottom;
                                 Bottom.m_W = Grow();
                                 Bottom.m_Gap = 10.0f;
